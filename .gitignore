@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# PyInstaller 构建产物（体积大，不入库）
+build/
+build*/
+dist/
+dist*/
+*.spec
+
+# 配置/缓存（含本地路径或敏感数据）
+config.json
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# 临时测试脚本
+test_*.py
