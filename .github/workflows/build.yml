@@ -1,0 +1,80 @@
+name: Build Windows Exe
+
+on:
+  push:
+    tags:
+      - 'v*'        # 推送 v1.7 / v1.8 之类的 tag 会自动触发并发布 Release
+  workflow_dispatch: # 允许在 Actions 页面手动触发
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write   # 用于创建 Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps (only what zhuiban_app needs)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pywin32 pillow requests urllib3 charset-normalizer idna certifi
+
+      - name: Read version from zhuiban_app.py
+        id: ver
+        shell: pwsh
+        run: |
+          $line = Select-String -Path zhuiban_app.py -Pattern '^APP_VERSION\s*=\s*"([^"]+)"'
+          $v = $line.Matches[0].Groups[1].Value
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build with PyInstaller (size optimized)
+        shell: pwsh
+        run: |
+          $exclude = @(
+            'numpy','pandas','scipy','matplotlib','tornado','jinja2',
+            'sqlite3','test','unittest','pydoc','xmlrpc','distutils',
+            'lib2to3','curses','asyncio','email','html','http.server',
+            'multiprocessing','setuptools','pip'
+          )
+          $excludeArgs = $exclude | ForEach-Object { "--exclude-module=$_" }
+          pyinstaller --onefile --windowed `
+            --name "追板精灵${{ steps.ver.outputs.version }}" `
+            --distpath dist_release `
+            --noupx `
+            $excludeArgs `
+            zhuiban_app.py
+
+      - name: Show artifact size
+        shell: pwsh
+        run: Get-ChildItem dist_release\*.exe | ForEach-Object { "{0,8:N2} MB  {1}" -f ($_.Length/1MB), $_.Name }
+
+      - name: Upload artifact (always, even without tag)
+        uses: actions/upload-artifact@v4
+        with:
+          name: 追板精灵${{ steps.ver.outputs.version }}
+          path: dist_release/*.exe
+          retention-days: 30
+
+      - name: Create GitHub Release (only on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist_release/*.exe
+          name: 追板精灵 ${{ github.ref_name }}
+          body: |
+            自动构建 ${{ github.ref_name }}
+            
+            ### 安装
+            下载下方 `.exe` 文件直接双击运行（无需安装 Python）。
+            
+            ### 系统要求
+            - Windows 10/11
+            - 通达信（点击异动跳转功能）
+          generate_release_notes: true
