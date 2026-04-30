@@ -34,15 +34,12 @@ jobs:
           $v = $line.Matches[0].Groups[1].Value
           echo "version=$v" >> $env:GITHUB_OUTPUT
 
-      - name: Build with PyInstaller (size optimized)
+      - name: Build with PyInstaller
         shell: pwsh
         run: |
-          $exclude = @(
-            'numpy','pandas','scipy','matplotlib','tornado','jinja2',
-            'sqlite3','test','unittest','pydoc','xmlrpc','distutils',
-            'lib2to3','curses','asyncio','email','html','http.server',
-            'multiprocessing','setuptools','pip'
-          )
+          # 仅排除明确不会被依赖链拉入的大型第三方库
+          # 标准库模块（email/html/http/asyncio等）不能手工排除，requests/urllib3会用到
+          $exclude = @('numpy','pandas','scipy','matplotlib','tornado','jinja2','setuptools','pip')
           $excludeArgs = $exclude | ForEach-Object { "--exclude-module=$_" }
           pyinstaller --onefile --windowed `
             --name "追板精灵${{ steps.ver.outputs.version }}" `
