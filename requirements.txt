@@ -1,3 +1,5 @@
+pywin32
+edge-tts
 pyttsx3>=2.90
 requests>=2.28.0
 akshare>=1.18.49

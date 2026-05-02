@@ -4,7 +4,7 @@
 功能：实时监控A股异动，语音播报，点击跳转通达信
 """
 
-APP_VERSION = "v1.7"
+APP_VERSION = "v1.8"
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -29,6 +29,8 @@ class Config:
     DEFAULTS = {
         "voice_enabled": True,
         "voice_rate": 2,
+        "voice_engine": "sapi",                       # sapi 本地(机械) / edge 在线神经(真人感)
+        "voice_name": "zh-CN-YunyangNeural",          # edge引擎的发音人
         "tdx_title": "通达信金融终端",
         "hotkey": "A",
         "hot_sector_enabled": True,
@@ -83,17 +85,34 @@ class Config:
 
 
 class VoiceEngine:
-    """语音引擎（Windows SAPI）"""
+    """语音引擎（支持本地 SAPI + 在线 edge-tts 真人神经语音）"""
+    
+    # 可选发音人（edge-tts 常用）
+    EDGE_VOICES = [
+        ("zh-CN-XiaoxiaoNeural", "晓晓(女声·自然)"),
+        ("zh-CN-YunyangNeural",  "云扬(男声·播音腔·财经推荐)"),
+        ("zh-CN-YunxiNeural",    "云希(男声·清朗)"),
+        ("zh-CN-YunjianNeural",  "云健(男声·沉稳)"),
+        ("zh-CN-XiaoyiNeural",   "晓伊(女声·年轻)"),
+        ("zh-CN-liaoning-XiaobeiNeural", "晓北(东北话女声)"),
+    ]
     
     def __init__(self):
-        self.speaker = None
         self.rate = 2
         self.enabled = True
+        self.engine = "sapi"  # "sapi" 或 "edge"
+        self.voice_name = "zh-CN-YunyangNeural"  # edge 发音人
         self.queue = queue.Queue()
         threading.Thread(target=self._worker, daemon=True).start()
     
     def set_rate(self, rate: int):
         self.rate = rate
+    
+    def set_engine(self, engine: str, voice_name: str = None):
+        if engine in ("sapi", "edge"):
+            self.engine = engine
+        if voice_name:
+            self.voice_name = voice_name
     
     def speak(self, text: str):
         if self.enabled:
@@ -107,14 +126,60 @@ class VoiceEngine:
             speaker.Rate = self.rate
             while True:
                 text = self.queue.get()
-                if self.enabled:
+                if not self.enabled:
+                    continue
+                played = False
+                if self.engine == "edge":
+                    played = self._speak_edge(text)
+                if not played:
+                    # edge 失败或选用 sapi，走本地 SAPI
                     try:
                         speaker.Rate = self.rate
                         speaker.Speak(text)
                     except Exception as e:
-                        print(f"语音播放失败: {e}")
+                        print(f"[Voice] SAPI播放失败: {e}")
         finally:
             pythoncom.CoUninitialize()
+    
+    def _speak_edge(self, text: str) -> bool:
+        """用 edge-tts 合成 mp3 并用 Windows MCI 播放。失败返回False让调用方回退SAPI"""
+        try:
+            import edge_tts
+            import asyncio
+            import tempfile
+            import os
+            import ctypes
+            # 语速：把 SAPI 的 -5..+8 映射到 edge 的百分比字符串
+            # 0 对应 +0%，每档 ±10%，范围 -50%..+80%
+            rate_pct = max(-50, min(100, int(self.rate) * 10))
+            rate_str = f"{'+' if rate_pct >= 0 else ''}{rate_pct}%"
+            # 临时文件
+            fd, mp3_path = tempfile.mkstemp(suffix='.mp3', prefix='zbv_')
+            os.close(fd)
+            try:
+                async def _synth():
+                    comm = edge_tts.Communicate(text, self.voice_name, rate=rate_str)
+                    await comm.save(mp3_path)
+                asyncio.run(_synth())
+                # MCI 播放（Windows 自带，支持 mp3，无需第三方播放库）
+                winmm = ctypes.windll.winmm
+                alias = f"zbv{threading.get_ident()}"
+                # 路径转短名避免中文/空格问题
+                cmd_open = f'open "{mp3_path}" type mpegvideo alias {alias}'
+                r = winmm.mciSendStringW(cmd_open, None, 0, 0)
+                if r != 0:
+                    return False
+                winmm.mciSendStringW(f'play {alias} wait', None, 0, 0)
+                winmm.mciSendStringW(f'close {alias}', None, 0, 0)
+                return True
+            finally:
+                try:
+                    os.remove(mp3_path)
+                except:
+                    pass
+        except Exception as e:
+            print(f"[Voice] edge-tts播放失败，回退SAPI: {type(e).__name__}: {e}")
+            return False
 
 
 class TdxController:
@@ -293,6 +358,8 @@ class ZhuiBanApp:
         self.voice = VoiceEngine()
         self.voice.enabled = self.config.get("voice_enabled", True)
         self.voice.set_rate(self.config.get("voice_rate", 2))
+        self.voice.set_engine(self.config.get("voice_engine", "sapi"),
+                              self.config.get("voice_name", "zh-CN-YunyangNeural"))
         
         self.tdx = TdxController(self.config.get("tdx_title", "通达信"))
         self.data_source = DataSource()
@@ -874,6 +941,32 @@ class SettingsWindow:
         ttk.Scale(rate_frame, from_=-5, to=8, variable=self.rate_var, length=150).pack(side=tk.LEFT, padx=10)
         tk.Label(rate_frame, textvariable=self.rate_var, fg="white", bg="#1a1a2e").pack(side=tk.LEFT)
         
+        # 语音引擎
+        eng_frame = tk.Frame(parent, bg="#1a1a2e")
+        eng_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(eng_frame, text="语音引擎:", fg="white", bg="#1a1a2e").pack(side=tk.LEFT)
+        self.engine_var = tk.StringVar(value=self.config.get("voice_engine", "sapi"))
+        engine_map = {"sapi": "本地SAPI(离线·机械)", "edge": "Edge在线神经语音(真人感·需联网)"}
+        engine_combo = ttk.Combobox(eng_frame, textvariable=self.engine_var,
+                                     values=list(engine_map.keys()), state="readonly", width=14)
+        engine_combo.pack(side=tk.LEFT, padx=10)
+        tk.Label(eng_frame, text="sapi=本地机械 / edge=在线真人",
+                 fg="#a0a0a0", bg="#1a1a2e", font=("微软雅黑", 8)).pack(side=tk.LEFT)
+        
+        # 发音人（仅edge引擎有效）
+        voice_frame = tk.Frame(parent, bg="#1a1a2e")
+        voice_frame.pack(fill=tk.X, padx=20, pady=5)
+        tk.Label(voice_frame, text="发音人:", fg="white", bg="#1a1a2e").pack(side=tk.LEFT)
+        self.voice_name_var = tk.StringVar(value=self.config.get("voice_name", "zh-CN-YunyangNeural"))
+        voice_values = [f"{code}  —  {label}" for code, label in VoiceEngine.EDGE_VOICES]
+        # 当前选中项的展示值
+        current = self.voice_name_var.get()
+        current_display = next((f"{c}  —  {l}" for c, l in VoiceEngine.EDGE_VOICES if c == current), voice_values[0])
+        self._voice_display_var = tk.StringVar(value=current_display)
+        voice_combo = ttk.Combobox(voice_frame, textvariable=self._voice_display_var,
+                                    values=voice_values, state="readonly", width=45)
+        voice_combo.pack(side=tk.LEFT, padx=10)
+        
         # 通达信标题
         tdx_frame = tk.Frame(parent, bg="#1a1a2e")
         tdx_frame.pack(fill=tk.X, padx=20, pady=10)
@@ -1033,6 +1126,14 @@ class SettingsWindow:
     def save(self):
         self.config.set("voice_enabled", self.voice_var.get())
         self.config.set("voice_rate", self.rate_var.get())
+        # 语音引擎 & 发音人
+        engine_val = self.engine_var.get()
+        self.config.set("voice_engine", engine_val)
+        # 从 "zh-CN-XXX  —  描述" 里抽出code
+        voice_disp = self._voice_display_var.get()
+        voice_code = voice_disp.split("  —  ")[0].strip() if "  —  " in voice_disp else voice_disp
+        self.config.set("voice_name", voice_code)
+        self.voice.set_engine(engine_val, voice_code)
         self.config.set("tdx_title", self.tdx_var.get())
         self.config.set("hot_sector_enabled", self.hot_var.get())
         self.config.set("sector_reason_enabled", self.reason_var.get())
