@@ -339,6 +339,15 @@ class AlertListItem(tk.Frame):
             tk.Label(self, text=net_text, fg=net_color, bg=self.BG_COLOR,
                      font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=2)
         
+        # 板块异动 / 板块新高：显示 message 中的领涨股等附加文本
+        if alert.alert_type in (AlertType.SECTOR_SURGE, AlertType.SECTOR_NEW_HIGH):
+            import re as _re
+            m = _re.search(r'[%％]\s*(.+)$', alert.message or '')
+            extra_msg = m.group(1).strip() if m else ''
+            if extra_msg:
+                tk.Label(self, text=extra_msg, fg="#ffd36b", bg=self.BG_COLOR,
+                         font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=4)
+        
         self.bind("<Button-1>", self._on_click)
         self.bind("<Double-Button-1>", self._on_click)
         for child in self.winfo_children():
@@ -808,7 +817,7 @@ class ZhuiBanApp:
             if news:
                 extras.append(news)
             if extras:
-                voice_msg = f"{message} {'，'.join(extras)}"
+                voice_msg = f"{voice_msg} {'，'.join(extras)}"
             self.voice.speak(voice_msg)
     
     def update_sectors(self):
@@ -893,37 +902,69 @@ class SettingsWindow:
         
         self.win = tk.Toplevel(parent)
         self.win.title("设置")
-        self.win.geometry("450x500")
+        self.win.geometry("480x600")
+        self.win.minsize(420, 420)
         self.win.configure(bg="#1a1a2e")
         self.win.transient(parent)
         self.win.grab_set()
         
+        # 按钮区先 pack 在底部，确保任何尺寸下都不会被裁掉
+        btn_frame = tk.Frame(self.win, bg="#1a1a2e")
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        
         notebook = ttk.Notebook(self.win)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # 基本设置
-        basic_frame = tk.Frame(notebook, bg="#1a1a2e")
-        notebook.add(basic_frame, text="基本设置")
+        # 基本设置（可滚动）
+        basic_frame = self._make_scrollable_tab(notebook, "基本设置")
         self.build_basic(basic_frame)
         
-        # 异动提醒
-        alert_frame = tk.Frame(notebook, bg="#1a1a2e")
-        notebook.add(alert_frame, text="异动提醒")
+        # 异动提醒（可滚动）
+        alert_frame = self._make_scrollable_tab(notebook, "异动提醒")
         self.build_alerts(alert_frame)
         
-        # 板块监控
-        block_frame = tk.Frame(notebook, bg="#1a1a2e")
-        notebook.add(block_frame, text="板块监控")
+        # 板块监控（可滚动）
+        block_frame = self._make_scrollable_tab(notebook, "板块监控")
         self.build_blocks(block_frame)
-        
-        # 按钮
-        btn_frame = tk.Frame(self.win, bg="#1a1a2e")
-        btn_frame.pack(fill=tk.X, padx=10, pady=10)
         
         tk.Button(btn_frame, text="保存", command=self.save,
                   bg="#2d5a27", fg="white", padx=20).pack(side=tk.RIGHT, padx=5)
         tk.Button(btn_frame, text="取消", command=self.win.destroy,
                   bg="#5a2727", fg="white", padx=20).pack(side=tk.RIGHT, padx=5)
+    
+    def _make_scrollable_tab(self, notebook, title):
+        """在 Notebook 中创建一个带滚动条 + 鼠标滚轮支持的 Tab，返回内部 Frame 作为内容父节点"""
+        outer = tk.Frame(notebook, bg="#1a1a2e")
+        notebook.add(outer, text=title)
+        
+        canvas = tk.Canvas(outer, bg="#1a1a2e", highlightthickness=0, borderwidth=0)
+        vbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        inner = tk.Frame(canvas, bg="#1a1a2e")
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+        
+        def _on_inner_config(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        inner.bind("<Configure>", _on_inner_config)
+        
+        def _on_canvas_config(event):
+            canvas.itemconfigure(win_id, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_config)
+        
+        # 鼠标进入 Tab 时绑定滚轮，离开时解绑，避免影响其它窗口
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        def _bind_wheel(_e=None):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        def _unbind_wheel(_e=None):
+            canvas.unbind_all("<MouseWheel>")
+        outer.bind("<Enter>", _bind_wheel)
+        outer.bind("<Leave>", _unbind_wheel)
+        
+        return inner
     
     def build_basic(self, parent):
         """基本设置"""
