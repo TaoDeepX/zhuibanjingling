@@ -375,7 +375,12 @@ class ZhuiBanApp:
         
         self.running = False
         self.alert_queue = queue.Queue()
-        self.announced: Set[str] = set()  # 已播报的（防重复）
+        self.announced: Set[str] = set()  # 板块异动/新高/逼近等通用去重
+        self.announced_limit_up: Set[str] = set()
+        self.announced_limit_down: Set[str] = set()
+        self.announced_open: Set[str] = set()
+        self.announced_surge: Set[str] = set()
+        self.announced_plunge: Set[str] = set()
         
         self.root = tk.Tk()
         self.root.title(f"追板精灵 {APP_VERSION}")
@@ -536,12 +541,6 @@ class ZhuiBanApp:
         self.voice.speak("开始监控")
         alert_count = 0
         
-        # 记录已播报的股票（按类型）
-        announced_limit_up = set()
-        announced_limit_down = set()
-        announced_open = set()
-        announced_surge = set()
-        announced_plunge = set()
         last_limit_up_codes = set()
         stock_name_cache = {}  # 股票名称缓存 {code: name}
         
@@ -599,14 +598,14 @@ class ZhuiBanApp:
                     stock_name_cache[code] = name
                     
                     # 新涨停
-                    if code not in announced_limit_up and alerts_config.get("封涨停", True):
-                        announced_limit_up.add(code)
+                    if code not in self.announced_limit_up and alerts_config.get("封涨停", True):
+                        self.announced_limit_up.add(code)
                         self._add_alert(code, name, pct, "封涨停", f"{name} 封涨停", now)
                         alert_count += 1
                     
                     # 打开过涨停（open_count > 0）
-                    if open_count > 0 and code not in announced_open and alerts_config.get("打开涨停", True):
-                        announced_open.add(code)
+                    if open_count > 0 and code not in self.announced_open and alerts_config.get("打开涨停", True):
+                        self.announced_open.add(code)
                         self._add_alert(code, name, pct, "打开涨停", f"{name} 打开涨停", now)
                         alert_count += 1
                 
@@ -615,8 +614,8 @@ class ZhuiBanApp:
                 if current_limit_up_codes or not last_limit_up_codes:
                     opened_stocks = last_limit_up_codes - current_limit_up_codes
                     for code in opened_stocks:
-                        if code not in announced_open and alerts_config.get("打开涨停", True):
-                            announced_open.add(code)
+                        if code not in self.announced_open and alerts_config.get("打开涨停", True):
+                            self.announced_open.add(code)
                             name = stock_name_cache.get(code, code)
                             # 实时查询当前涨幅，避免显示0.00%
                             quote = self.data_source.get_stock_quote(code)
@@ -635,8 +634,8 @@ class ZhuiBanApp:
                     for stock in limit_down_list:
                         code = stock['code']
                         name = stock['name']
-                        if code not in announced_limit_down:
-                            announced_limit_down.add(code)
+                        if code not in self.announced_limit_down:
+                            self.announced_limit_down.add(code)
                             self._add_alert(code, name, stock.get('change_pct', -10), "封跌停", f"{name} 封跌停", now)
                             alert_count += 1
                 
@@ -662,8 +661,8 @@ class ZhuiBanApp:
                         name = stock['name']
                         pct = stock['change_pct']
                         stock_name_cache[code] = name
-                        if code not in announced_surge and 5 <= pct < 9.9:
-                            announced_surge.add(code)
+                        if code not in self.announced_surge and 5 <= pct < 9.9:
+                            self.announced_surge.add(code)
                             self._add_alert(code, name, pct, "大幅拉升", f"{name} 大幅拉升 +{pct:.2f}%", now)
                             alert_count += 1
                 
@@ -675,8 +674,8 @@ class ZhuiBanApp:
                         name = stock['name']
                         pct = stock['change_pct']
                         stock_name_cache[code] = name
-                        if code not in announced_plunge and pct <= -5:
-                            announced_plunge.add(code)
+                        if code not in self.announced_plunge and pct <= -5:
+                            self.announced_plunge.add(code)
                             self._add_alert(code, name, pct, "快速跳水", f"{name} 快速跳水 {pct:.2f}%", now)
                             alert_count += 1
                 
@@ -853,10 +852,37 @@ class ZhuiBanApp:
         
         ok, msg = self.data_source.test_connection()
         if not ok:
-            from tkinter import messagebox
             messagebox.showerror("网络错误", f"无法获取数据：\n{msg}\n\n请检查网络连接后重试")
             self.status_var.set("● 已停止")
             return
+        
+        # 检测同日 session，让用户选择继续或从头
+        session = self._load_session()
+        if session:
+            total = (len(session.get("announced", []))
+                     + len(session.get("announced_limit_up", []))
+                     + len(session.get("announced_limit_down", []))
+                     + len(session.get("announced_open", []))
+                     + len(session.get("announced_surge", []))
+                     + len(session.get("announced_plunge", [])))
+            if total > 0:
+                choice = messagebox.askyesnocancel(
+                    "检测到今日记录",
+                    f"今天已播报过 {total} 条提醒。\n\n"
+                    "【是】继续上次（跳过已播报）\n"
+                    "【否】从头开始（全部重新播报）\n"
+                    "【取消】不启动")
+                if choice is None:
+                    self.status_var.set("● 已停止")
+                    return
+                if choice:
+                    self._restore_session(session)
+                else:
+                    self._clear_announced()
+            else:
+                self._clear_announced()
+        else:
+            self._clear_announced()
         
         self.running = True
         self.status_var.set("● 监控中")
@@ -881,8 +907,57 @@ class ZhuiBanApp:
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
     
+    SESSION_FILE = "zhuiban_session.json"
+    
+    def _save_session(self):
+        """将当天已播报集合持久化，下次启动可恢复"""
+        data = {
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "announced": list(self.announced),
+            "announced_limit_up": list(self.announced_limit_up),
+            "announced_limit_down": list(self.announced_limit_down),
+            "announced_open": list(self.announced_open),
+            "announced_surge": list(self.announced_surge),
+            "announced_plunge": list(self.announced_plunge),
+        }
+        try:
+            with open(self.SESSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+    
+    def _load_session(self):
+        """读取同日 session，不同日返回 None"""
+        try:
+            with open(self.SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                return data
+        except Exception:
+            pass
+        return None
+    
+    def _restore_session(self, data):
+        """从 session 数据恢复已播报集合"""
+        self.announced = set(data.get("announced", []))
+        self.announced_limit_up = set(data.get("announced_limit_up", []))
+        self.announced_limit_down = set(data.get("announced_limit_down", []))
+        self.announced_open = set(data.get("announced_open", []))
+        self.announced_surge = set(data.get("announced_surge", []))
+        self.announced_plunge = set(data.get("announced_plunge", []))
+    
+    def _clear_announced(self):
+        """清空所有已播报集合（从头开始）"""
+        self.announced.clear()
+        self.announced_limit_up.clear()
+        self.announced_limit_down.clear()
+        self.announced_open.clear()
+        self.announced_surge.clear()
+        self.announced_plunge.clear()
+    
     def on_close(self):
         self.running = False
+        self._save_session()
         self.config.save()
         time.sleep(0.2)
         self.root.destroy()

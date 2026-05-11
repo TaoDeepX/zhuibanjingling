@@ -16,6 +16,7 @@ dist*/
 # 配置/缓存（含本地路径或敏感数据）
 config.json
 zhuiban_config.json
+zhuiban_session.json
 *.log
 
 # IDE
