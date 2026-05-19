@@ -304,11 +304,16 @@ class AlertListItem(tk.Frame):
             tk.Label(self, text=alert.stock.sector, fg="#d0d0d0", bg=self.BG_COLOR,
                      font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=5)
         
-        # 板块驱动事件（来自选股宝，红色显示，类似图2效果）
+        # 板块驱动事件（来自选股宝，可包含多个概念事件，用 ; 分隔）
         sector_event = getattr(alert.stock, 'sector_event', '')
         if sector_event:
-            tk.Label(self, text=sector_event, fg="#ff5050", bg=self.BG_COLOR,
-                     font=("微软雅黑", 9)).pack(side=tk.LEFT, padx=3)
+            display_text = sector_event if len(sector_event) <= 120 else sector_event[:117] + '...'
+            ev_lbl = tk.Label(self, text=display_text, fg="#ff5050", bg=self.BG_COLOR,
+                              font=("微软雅黑", 9))
+            ev_lbl.pack(side=tk.LEFT, padx=3)
+            # 完整内容鼠标悬停 tooltip
+            if len(sector_event) > 120:
+                self._bind_tooltip(ev_lbl, sector_event)
         
         # 个股标签（来自选股宝）
         label = getattr(alert.stock, 'label', '')
@@ -357,6 +362,29 @@ class AlertListItem(tk.Frame):
     def _on_click(self, event=None):
         if self.on_click:
             self.on_click(self.alert.stock.code)
+    
+    def _bind_tooltip(self, widget, text):
+        """给控件绑定鼠标悬停 tooltip，显示完整文本"""
+        tip = {'win': None}
+        def show(_e=None):
+            if tip['win'] is not None:
+                return
+            x = widget.winfo_rootx()
+            y = widget.winfo_rooty() + widget.winfo_height() + 2
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            tk.Label(tw, text=text, bg="#3a3a4a", fg="white",
+                     font=("微软雅黑", 9), justify=tk.LEFT,
+                     wraplength=520, padx=6, pady=4,
+                     borderwidth=1, relief="solid").pack()
+            tip['win'] = tw
+        def hide(_e=None):
+            if tip['win'] is not None:
+                tip['win'].destroy()
+                tip['win'] = None
+        widget.bind("<Enter>", show)
+        widget.bind("<Leave>", hide)
 
 
 class ZhuiBanApp:
@@ -761,11 +789,11 @@ class ZhuiBanApp:
                 label = labels.get(code, "")
             except:
                 pass
-            # 选股宝板块驱动事件（用概念名匹配）
+            # 选股宝板块驱动事件（遍历股票的所有概念，全部匹配，与商业版"追板精灵"对齐）
             if sector:
                 try:
-                    first_sector = sector.split('|')[0] if '|' in sector else sector
-                    sector_event = self.data_source.xgb_match_plate_event(first_sector)
+                    events = self.data_source.xgb_match_plate_events_all(sector, max_n=3)
+                    sector_event = ' ; '.join(events) if events else ''
                 except:
                     pass
             # 个股资讯/公告（30分钟内）

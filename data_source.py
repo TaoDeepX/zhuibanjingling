@@ -311,7 +311,7 @@ class DataSource:
     def xgb_get_surge_plates(self) -> List[Dict]:
         """获取异动板块及驱动事件（选股宝），60秒缓存"""
         now = time.time()
-        if now - self._xgb_plates_time < 60 and self._xgb_plates:
+        if now - self._xgb_plates_time < 30 and self._xgb_plates:
             return self._xgb_plates
         try:
             resp = self.session.get(f"{self.XGB_BASE}/surge_stock/plates",
@@ -325,7 +325,7 @@ class DataSource:
         return self._xgb_plates
     
     def xgb_match_plate_event(self, sector_name: str) -> str:
-        """根据概念/板块名匹配选股宝的驱动事件描述"""
+        """根据概念/板块名匹配选股宝的驱动事件描述（单概念）"""
         plates = self.xgb_get_surge_plates()
         for p in plates:
             pname = p.get('name', '')
@@ -336,6 +336,34 @@ class DataSource:
             if pname in sector_name or sector_name in pname:
                 return f"{pname}-{desc}"
         return ''
+    
+    def xgb_match_plate_events_all(self, sector_str: str, max_n: int = 3) -> List[str]:
+        """对一只股票的多个概念（|分隔）全部匹配选股宝驱动事件，返回事件列表。
+        商业版"追板精灵"在一只股上同时显示多个概念的最新事件，本方法对齐其效果。
+        """
+        if not sector_str:
+            return []
+        sectors = [s.strip() for s in sector_str.split('|') if s.strip()]
+        if not sectors:
+            return []
+        plates = self.xgb_get_surge_plates()
+        results = []
+        seen = set()
+        for sec in sectors:
+            for p in plates:
+                pname = p.get('name', '')
+                desc = p.get('description', '')
+                if not desc or not pname:
+                    continue
+                if pname in seen:
+                    continue
+                if pname in sec or sec in pname:
+                    results.append(f"{pname}-{desc}")
+                    seen.add(pname)
+                    break
+            if len(results) >= max_n:
+                break
+        return results
     
     # ========== 资讯/公告聚合（选股宝快讯 + 巨潮公告 + 东财公告）==========
     
